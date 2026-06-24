@@ -1,7 +1,8 @@
-mod error;
+pub mod error;
 mod server;
 mod peer;
 mod client;
+mod utils;
 
 
 pub use server::server::Server;
