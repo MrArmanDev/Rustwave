@@ -4,6 +4,7 @@ use dashmap::DashMap;
 use tokio::sync::mpsc::Sender;
 use uuid::Uuid;
 
+use crate::peer::peer_emitter::PeerEmitter;
 use crate::utils::send_data::EventAndData;
 
 use crate::error::Result;
@@ -14,7 +15,7 @@ pub struct Peer {
     event: Arc<
         DashMap<
             String,
-            Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>,
+            Arc<dyn Fn(String, PeerEmitter) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>,
         >,
     >,
 }
@@ -37,7 +38,7 @@ impl Peer {
     ) -> Arc<
         DashMap<
             String,
-            Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>,
+            Arc<dyn Fn(String, PeerEmitter) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>,
         >,
     > {
         self.event.clone()
@@ -45,11 +46,11 @@ impl Peer {
 
     pub fn on<F, Fut>(&mut self, event: &str, callback: F)
     where
-        F: Fn(String) -> Fut + Send + Sync + 'static,
+        F: Fn(String, PeerEmitter) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
         self.event
-            .insert(event.to_string(), Arc::new(move |v| Box::pin(callback(v))));
+            .insert(event.to_string(), Arc::new(move |v, y| Box::pin(callback(v, y))));
     }
 
     pub async fn emit(&mut self, event: &str, data: String) -> Result<()> {

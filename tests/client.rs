@@ -12,11 +12,15 @@ async fn test_client() {
         println!("Server said: {}", data);
     });
 
+    client.on("join", |data| async move {
+        println!("Server joined: {}", data);
+    });
+
 
     client.emit("join", "Rahul".to_string()).await.unwrap();
     client.emit("message", "Hello Server!".to_string()).await.unwrap();
     client.emit("message", "Kya haal hai?".to_string()).await.unwrap();
     client.emit("leave", "Rahul".to_string()).await.unwrap();
 
-    client.listen().await.unwrap();
+    client.wait().await
 }

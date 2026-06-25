@@ -8,6 +8,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::Peer;
 use crate::error::Result;
+use crate::peer::peer_emitter::PeerEmitter;
 use crate::utils::send_data::EventAndData;
 
 pub struct Server {
@@ -46,6 +47,7 @@ impl Server {
                         let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(100);
 
                         let client = Peer::new(tx.clone());
+                        let tx_emitter = PeerEmitter::new(tx.clone());
                         let events = client.get_event();
 
                         let token = CancellationToken::new();
@@ -54,6 +56,8 @@ impl Server {
                         let write_token = token.clone();
 
                         let read_task = tokio::spawn(async move {
+                            let emitter = tx_emitter;
+
                             loop {
                                 tokio::select! {
                                             mass = read.next() => {
@@ -69,7 +73,7 @@ impl Server {
                                                                         };
 
                                                                         if let Some(handler) = events.get(&parsed.event) {
-                                    handler(parsed.data).await;
+                                    handler(parsed.data, emitter.clone()).await;
                                 }
 
 

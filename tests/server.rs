@@ -6,15 +6,17 @@ async fn test_server() {
     server.on_connection(|mut peer| async move {
         println!("New connection: {}", peer.get_socket_id());
 
-        peer.on("message", |data| async move {
+        peer.on("message", |data, mut emitter| async move {
             println!("Server got message: {}", data);
+            emitter.emit("message", "Hello i am server is here".to_string()).await.unwrap();
         });
 
-        peer.on("join", |data| async move {
+        peer.on("join", |data, mut emitter| async move {
             println!("User joined: {}", data);
+            emitter.emit("join", "server joined".to_string()).await.unwrap();
         });
 
-        peer.on("leave", |data| async move {
+        peer.on("leave", |data, _| async move {
             println!("User left: {}", data);
         });
 
