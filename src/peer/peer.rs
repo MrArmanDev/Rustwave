@@ -2,6 +2,7 @@ use std::{pin::Pin, sync::Arc};
 
 use dashmap::DashMap;
 use tokio::sync::mpsc::Sender;
+use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
 
 use crate::peer::peer_emitter::PeerEmitter;
@@ -11,7 +12,7 @@ use crate::error::Result;
 
 pub struct Peer {
     socket_id: Uuid,
-    sender: Sender<String>,
+    sender: Sender<Message>,
     event: Arc<
         DashMap<
             String,
@@ -21,7 +22,7 @@ pub struct Peer {
 }
 
 impl Peer {
-    pub fn new(sender: Sender<String>) -> Self {
+    pub fn new(sender: Sender<Message>) -> Self {
         Self {
             socket_id: Uuid::new_v4(),
             sender,
@@ -59,11 +60,12 @@ impl Peer {
             data,
         })?;
 
-        match self.sender.send(json).await {
+        match self.sender.send(Message::Text(json.into())).await {
             Ok(_) => Ok(()),
             Err(_) => Err(crate::error::RustWaveError::Internal(
                 "Message sendingg error".to_string(),
             )),
         }
     }
+    
 }

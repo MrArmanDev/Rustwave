@@ -1,14 +1,15 @@
 use tokio::sync::mpsc::Sender;
+use tokio_tungstenite::tungstenite::Message;
 
 use crate::{error::Result, utils::send_data::EventAndData};
 
 #[derive(Clone)]
 pub struct PeerEmitter {
-    sender: Sender<String>,
+    sender: Sender<Message>,
 }
 
 impl PeerEmitter {
-    pub fn new(sender: Sender<String>) -> Self {
+    pub fn new(sender: Sender<Message>) -> Self {
         Self { sender }
     }
 
@@ -18,7 +19,7 @@ impl PeerEmitter {
             data,
         })?;
 
-        match self.sender.send(json).await {
+        match self.sender.send(Message::Text(json.into())).await {
             Ok(_) => Ok(()),
             Err(_) => Err(crate::error::RustWaveError::Internal(
                 "Message sendingg error".to_string(),

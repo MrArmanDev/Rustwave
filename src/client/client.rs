@@ -1,15 +1,15 @@
 use std::{pin::Pin, sync::Arc};
 
 use dashmap::DashMap;
-use futures_util::{SinkExt, StreamExt, stream::SplitSink};
-use tokio::net::TcpStream;
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
+use futures_util::{SinkExt, StreamExt};
+use tokio::sync::mpsc::Sender;
+use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tokio_util::sync::CancellationToken;
 
 use crate::{error::Result, utils::send_data::EventAndData};
 
 pub struct Client {
-    sender: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
+    sender: Sender<Message>,
     token: CancellationToken,
     events: Arc<
         DashMap<
@@ -22,7 +22,7 @@ pub struct Client {
 impl Client {
     pub async fn connect(url: &str) -> Result<Self> {
         let (stream, _) = connect_async(url).await?;
-        let (write, mut read) = stream.split();
+        let (mut write, mut read) = stream.split();
 
         let events: Arc<
             DashMap<
@@ -37,9 +37,12 @@ impl Client {
         > = Arc::new(DashMap::new());
         let read_event = events.clone();
 
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Message>(100);
+
         let token = CancellationToken::new();
         let read_token = token.clone();
         let wait_token = token.clone();
+        let write_token = token.clone();
 
         tokio::spawn(async move {
             let read_event = read_event.clone();
@@ -68,14 +71,40 @@ impl Client {
             }
         });
 
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    mass = rx.recv() => {
+                        match mass {
+                            Some(m) => {
+                                match write.send(m).await {
+                                    Ok(_v) => {}
+                                    Err(_) => {
+                                        write_token.cancel();
+                                        break
+                                    }
+                                }
+                            }
+                            None => {
+                                write_token.cancel();
+                                break
+                            }
+                        }
+                    }
+
+                    _ = write_token.cancelled() => break
+                }
+            }
+        });
+
         Ok(Self {
-            sender: write,
+            sender: tx,
             token: wait_token,
             events: events,
         })
     }
 
-    pub fn on<F, Fut>(&mut self, event: &str, callback: F)
+    pub fn on<F, Fut>(&self, event: &str, callback: F)
     where
         F: Fn(String) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,
@@ -84,7 +113,7 @@ impl Client {
             .insert(event.to_string(), Arc::new(move |v| Box::pin(callback(v))));
     }
 
-    pub async fn emit(&mut self, event: &str, data: String) -> Result<()> {
+    pub async fn emit(&self, event: &str, data: String) -> Result<()> {
         let json = serde_json::to_string(&EventAndData {
             event: event.to_string(),
             data,
