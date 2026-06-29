@@ -1,4 +1,5 @@
 use thiserror::Error;
+use tokio::sync::mpsc::error::SendError;
 
 
 #[derive(Debug, Error)]
@@ -6,6 +7,13 @@ pub enum RustWaveError {
 
     #[error("Internal error: {0}")]
     Internal(String),
+
+    #[error("Client not found: {0}")]
+    ClientNotFound(String),
+
+    #[error("Connection closed")]
+    ConnectionClosed,
+
 
     #[error("Io error: {0}")]
     Io(#[from] std::io::Error),

@@ -1,24 +1,22 @@
-use dashmap::DashMap;
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
 use std::{future::Future, pin::Pin};
 use tokio::net::TcpListener;
-use tokio::sync::mpsc::Sender;
+
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
-use uuid::Uuid;
 
 use crate::Peer;
 use crate::error::Result;
 use crate::peer::peer_emitter::PeerEmitter;
-use crate::server::server_handler::ServerHandler;
+use crate::server::server_handler::ServerStates;
 use crate::utils::send_data::EventAndData;
 
 pub struct Server {
     add: String,
     handler: Option<Arc<dyn Fn(Peer) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>>,
-    client: Arc<DashMap<Uuid, Sender<Message>>>,
+    server_states: Arc<ServerStates>,
 }
 
 impl Server {
@@ -26,7 +24,7 @@ impl Server {
         Self {
             add: adr.to_string(),
             handler: None,
-            client: Arc::new(DashMap::new()),
+            server_states: Arc::new(ServerStates::new()),
         }
     }
 
@@ -38,11 +36,9 @@ impl Server {
         self.handler = Some(Arc::new(move |client| Box::pin(handler(client))));
     }
 
-    pub fn handle(&self) -> ServerHandler {
-        ServerHandler::new(self.client.clone())
+    pub fn handle(&self) -> Arc<ServerStates> {
+        self.server_states.clone()
     }
-
-
 
     pub async fn run(&self) -> Result<()> {
         let listener = TcpListener::bind(&self.add).await?;
@@ -51,7 +47,7 @@ impl Server {
             let (stream, _) = listener.accept().await?;
             let handler = self.handler.clone();
 
-            let registry = self.client.clone();
+            let registry = self.server_states.clone();
 
             tokio::spawn(async move {
                 match accept_async(stream).await {
@@ -66,7 +62,7 @@ impl Server {
 
                         let socket_id = client.get_socket_id();
 
-                        registry.insert(socket_id, tx.clone());
+                        registry.insert_client(socket_id, tx.clone());
 
                         let events = client.get_event();
 
@@ -80,60 +76,59 @@ impl Server {
 
                             loop {
                                 tokio::select! {
-                                            mass = read.next() => {
-                                                match mass {
-                                                    Some(m) => {
-                                                        match m {
-                                                            Ok(message) => {
-                                                                match message {
-                                                                    Message::Text(text) => {
-                                                                        let parsed = match serde_json::from_str::<EventAndData>(&text) {
-                                                                            Ok(v) => v,
-                                                                            Err(_) => continue
-                                                                        };
+                                    mass = read.next() => {
+                                        match mass {
+                                            Some(m) => {
+                                                match m {
+                                                    Ok(message) => {
+                                                        match message {
+                                                            Message::Text(text) => {
+                                                                let parsed = match serde_json::from_str::<EventAndData>(&text) {
+                                                                    Ok(v) => v,
+                                                                    Err(_) => continue
+                                                                };
 
-                                                                        if let Some(handler) = events.get(&parsed.event) {
-                                    handler(parsed.data, emitter.clone()).await;
-                                }
+                                                                if let Some(handler) = events.get(&parsed.event) {
+                                                                    handler(parsed.data, emitter.clone()).await;
+                                                                }
 
 
-                                                                    }
+                                                            }
 
-                                                                    Message::Ping(data) => {
-                                                                        match sender.send(Message::Pong(data)).await {
-                                                                            Ok(_) => {}
-                                                                            Err(_) => continue
-                                                                        }
-                                                                    }
-
-                                                                    Message::Close(frame) => {
-                                                                        match sender.send(Message::Close(frame)).await {
-                                                                            Ok(_) => {}
-                                                                            Err(_) => continue
-                                                                        }
-                                                                    }
-
-                                                                    _ => {}
+                                                            Message::Ping(data) => {
+                                                                match sender.send(Message::Pong(data)).await {
+                                                                    Ok(_) => {}
+                                                                    Err(_) => break
                                                                 }
                                                             }
 
-                                                            Err(_) => {
-                                                                registry.remove(&socket_id);
-                                                                read_token.cancel();
-                                                                break
+                                                            Message::Close(frame) => {
+                                                                match sender.send(Message::Close(frame)).await {
+                                                                    Ok(_) => {}
+                                                                    Err(_) => break
+                                                                }
                                                             }
+
+                                                            _ => {}
                                                         }
                                                     }
-                                                    None => {
-                                                        registry.remove(&socket_id);
-                                                        read_token.cancel();
-                                                        break
-                                                    }
+
+                                                    Err(_) => break
                                                 }
                                             }
-
-                                            _ = read_token.cancelled() => break
+                                            None => break
                                         }
+                                    }
+
+                                    _ = read_token.cancelled() => break
+                                }
+                            }
+
+                            registry.remove_client(&socket_id);
+                            read_token.cancel();
+
+                            if let Some(handler) = events.get("disconnect") {
+                                handler("".to_string(), emitter.clone()).await
                             }
                         });
 
@@ -144,7 +139,7 @@ impl Server {
                                         match mass {
                                             Some(m) => {
                                                 match write.send(m).await {
-                                                    Ok(_v) => {}
+                                                    Ok(_) => {}
                                                     Err(_) => {
                                                         write_token.cancel();
                                                         break
