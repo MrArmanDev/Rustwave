@@ -1,13 +1,14 @@
 use std::sync::Arc;
 
 use dashmap::{DashMap, DashSet};
+use serde::Serialize;
 use tokio::sync::mpsc::Sender;
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
 
 use crate::error::{Result, RustWaveError};
 
-use crate::utils::send_data::EventAndData;
+use crate::utils::send_data::Response;
 
 pub struct ServerStates {
     clients: Arc<DashMap<Uuid, Sender<Message>>>,
@@ -37,8 +38,74 @@ impl ServerStates {
             .insert(id);
     }
 
-    pub async fn broadcast(&self, event: &str, data: String) -> Result<()> {
-        let json = serde_json::to_string(&EventAndData {
+    pub(crate) fn remove_room(&self, room: &str, id: &Uuid) {
+        if let Some(room) = self.rooms.get_mut(room) {
+            room.remove(id);
+        }
+    }
+
+    pub async fn room_broadcast<T: Serialize>(
+        &self,
+        room: &str,
+        event: &str,
+        data: T,
+    ) -> Result<()> {
+        let json = serde_json::to_string(&Response {
+            event: event.to_string(),
+            data,
+        })?;
+
+        let mess = Message::Text(json.into());
+
+        for con in self.rooms.get(room).iter() {
+            let sender = con.value();
+
+            for client in sender.iter() {
+                let tx = self.clients.get(&client);
+
+                if let Some(tx) = tx {
+                    let _ = tx.value().send(mess.clone()).await;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub(crate) async fn room_broadcast_except<T: Serialize>(
+        &self,
+        room: &str,
+        socket_id: &Uuid,
+        event: &str,
+        data: T,
+    ) -> Result<()> {
+        let json = serde_json::to_string(&Response {
+            event: event.to_string(),
+            data,
+        })?;
+
+        let mess = Message::Text(json.into());
+
+        if let Some(con) = self.rooms.get(room) {
+            let sender = con.value();
+
+            for client in sender.iter() {
+                if client.key() == socket_id {
+                    continue;
+                }
+                let tx = self.clients.get(client.key());
+
+                if let Some(tx) = tx {
+                    let _ = tx.value().send(mess.clone()).await;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub async fn broadcast<T: Serialize>(&self, event: &str, data: T) -> Result<()> {
+        let json = serde_json::to_string(&Response {
             event: event.to_string(),
             data,
         })?;
@@ -53,13 +120,18 @@ impl ServerStates {
         Ok(())
     }
 
-    pub async fn emit_to(&self, socket_id: &Uuid, event: &str, message: String) -> Result<()> {
+    pub async fn emit_to<T: Serialize>(
+        &self,
+        socket_id: &Uuid,
+        event: &str,
+        message: T,
+    ) -> Result<()> {
         let client = match self.clients.get(socket_id) {
             Some(client) => client,
             None => return Err(RustWaveError::ClientNotFound(socket_id.to_string())),
         };
 
-        let json = serde_json::to_string(&EventAndData {
+        let json = serde_json::to_string(&Response {
             event: event.to_string(),
             data: message,
         })?;

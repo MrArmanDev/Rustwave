@@ -9,9 +9,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::Peer;
 use crate::error::Result;
-use crate::peer::peer_emitter::PeerEmitter;
+use crate::peer::peer_conext::PeerContext;
 use crate::server::server_handler::ServerStates;
-use crate::utils::send_data::EventAndData;
+use crate::utils::send_data::Request;
 
 pub struct Server {
     add: String,
@@ -57,8 +57,11 @@ impl Server {
                         let (tx, mut rx) = tokio::sync::mpsc::channel::<Message>(100);
                         let tx_sender = tx.clone();
 
-                        let client = Peer::new(tx.clone());
-                        let tx_emitter = PeerEmitter::new(tx.clone());
+                        let client = Peer::new(tx.clone(), registry.clone());
+                        let client_rooms = client.get_rooms();
+
+                        let context =
+                            PeerContext::new(client.get_socket_id(), tx.clone(), registry.clone());
 
                         let socket_id = client.get_socket_id();
 
@@ -70,9 +73,14 @@ impl Server {
                         let read_token = token.clone();
                         let write_token = token.clone();
 
+                        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<()>();
+
                         let read_task = tokio::spawn(async move {
-                            let emitter = tx_emitter;
+                            let emitter = context;
                             let sender = tx_sender;
+                            let rooms = client_rooms;
+
+                            let _ = ready_rx.await;
 
                             loop {
                                 tokio::select! {
@@ -83,7 +91,7 @@ impl Server {
                                                     Ok(message) => {
                                                         match message {
                                                             Message::Text(text) => {
-                                                                let parsed = match serde_json::from_str::<EventAndData>(&text) {
+                                                                let parsed = match serde_json::from_str::<Request>(&text) {
                                                                     Ok(v) => v,
                                                                     Err(_) => continue
                                                                 };
@@ -104,7 +112,7 @@ impl Server {
 
                                                             Message::Close(frame) => {
                                                                 match sender.send(Message::Close(frame)).await {
-                                                                    Ok(_) => {}
+                                                                    Ok(_) => break,
                                                                     Err(_) => break
                                                                 }
                                                             }
@@ -125,6 +133,11 @@ impl Server {
                             }
 
                             registry.remove_client(&socket_id);
+
+                            for room in rooms.iter() {
+                                registry.remove_room(&room, &socket_id);
+                            }
+                            
                             read_token.cancel();
 
                             if let Some(handler) = events.get("disconnect") {
@@ -161,6 +174,8 @@ impl Server {
                         if let Some(handler) = handler {
                             handler(client).await;
                         }
+
+                        let _ = ready_tx.send(());
 
                         let _ = tokio::join!(read_task, write_task);
                     }

@@ -2,11 +2,12 @@ use std::{pin::Pin, sync::Arc};
 
 use dashmap::DashMap;
 use futures_util::{SinkExt, StreamExt};
+use serde::Serialize;
 use tokio::sync::mpsc::Sender;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tokio_util::sync::CancellationToken;
 
-use crate::{error::Result, utils::send_data::EventAndData};
+use crate::{error::Result, utils::send_data::{Request, Response}};
 
 pub struct Client {
     sender: Sender<Message>,
@@ -52,7 +53,7 @@ impl Client {
                         match mass {
                             Some(Ok(Message::Text(text))) => {
 
-                                let parsed: EventAndData = serde_json::from_str(&text).unwrap();
+                                let parsed: Request = serde_json::from_str(&text).unwrap();
 
 
                                 if let Some(handler) = read_event.get(&parsed.event) {
@@ -62,6 +63,10 @@ impl Client {
                             Some(Ok(_)) => {}
                             None | Some(Err(_)) => {
                                 read_token.cancel();
+                                if let Some(handler) = read_event.get("disconnect") {
+                                    handler("".to_string()).await;
+                                }
+                                break
                             }
                         }
                     }
@@ -113,8 +118,8 @@ impl Client {
             .insert(event.to_string(), Arc::new(move |v| Box::pin(callback(v))));
     }
 
-    pub async fn emit(&self, event: &str, data: String) -> Result<()> {
-        let json = serde_json::to_string(&EventAndData {
+    pub async fn emit<T: Serialize>(&self, event: &str, data: T) -> Result<()> {
+        let json = serde_json::to_string(&Response {
             event: event.to_string(),
             data,
         })?;
